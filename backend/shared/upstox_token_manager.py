@@ -25,7 +25,7 @@ class UpstoxTokenManager:
     Features:
     - JSON cache for dynamic tokens (access_token, refresh_token, expiry)
     - .env for static credentials (client_id, client_secret, redirect_uri)
-    - Thread-safe token updates
+    - Thread-safe token updates using reentrant lock (RLock)
     - Proactive refresh (15 minutes before expiry)
     - Reactive refresh (on 401 errors)
     - Comprehensive error handling
@@ -54,8 +54,8 @@ class UpstoxTokenManager:
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_file = os.path.join(cache_dir, 'upstox_tokens.json')
         
-        # Thread lock for safe token updates
-        self._lock = threading.Lock()
+        # Reentrant thread lock for safe token updates across nested method calls
+        self._lock = threading.RLock()
         
         # Upstox OAuth endpoints (v2)
         self.refresh_url = "https://api.upstox.com/v2/login/authorization/token"
