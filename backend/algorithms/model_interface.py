@@ -134,6 +134,9 @@ class ModelInterface(ABC):
         if X.shape[0] == 0:
             raise ValueError("X cannot be empty")
         
+        if np.isnan(X).any() or np.isinf(X).any():
+            raise ValueError("X contains NaN or infinity values")
+        
         if y is not None:
             if not isinstance(y, np.ndarray):
                 raise ValueError("y must be a numpy array")
@@ -143,6 +146,9 @@ class ModelInterface(ABC):
             
             if X.shape[0] != y.shape[0]:
                 raise ValueError("X and y must have the same number of samples")
+                
+            if np.isnan(y).any() or np.isinf(y).any():
+                raise ValueError("y contains NaN or infinity values")
 
 
 class PredictionResult:
@@ -172,14 +178,43 @@ class PredictionResult:
             last_updated: ISO timestamp of when prediction was made
             currency: Currency of the prediction
         """
-        self.predicted_price = predicted_price
-        self.confidence = confidence
-        self.price_range = price_range
-        self.time_frame_days = time_frame_days
-        self.model_info = model_info
-        self.data_points_used = data_points_used
-        self.last_updated = last_updated
-        self.currency = currency
+        # Validate and sanitize predicted price
+        try:
+            self.predicted_price = max(0.0, float(predicted_price))
+            if np.isnan(self.predicted_price) or np.isinf(self.predicted_price):
+                self.predicted_price = 0.0
+        except (ValueError, TypeError):
+            self.predicted_price = 0.0
+            
+        # Validate and clamp confidence level (0-100)
+        try:
+            conf_val = float(confidence)
+            if np.isnan(conf_val) or np.isinf(conf_val):
+                conf_val = 50.0
+            if 0.0 <= conf_val <= 1.0:
+                conf_val = conf_val * 100.0
+            self.confidence = max(0.0, min(100.0, conf_val))
+        except (ValueError, TypeError):
+            self.confidence = 50.0
+            
+        # Validate price range bounds
+        try:
+            lower, upper = float(price_range[0]), float(price_range[1])
+            if np.isnan(lower) or np.isinf(lower) or lower < 0:
+                lower = self.predicted_price * 0.95
+            if np.isnan(upper) or np.isinf(upper) or upper < 0:
+                upper = self.predicted_price * 1.05
+            if lower > upper:
+                lower, upper = upper, lower
+            self.price_range = (lower, upper)
+        except (ValueError, TypeError, IndexError):
+            self.price_range = (self.predicted_price * 0.95, self.predicted_price * 1.05)
+            
+        self.time_frame_days = max(1, int(time_frame_days)) if time_frame_days else 1
+        self.model_info = model_info if isinstance(model_info, dict) else {}
+        self.data_points_used = max(0, int(data_points_used)) if data_points_used else 0
+        self.last_updated = str(last_updated) if last_updated else ""
+        self.currency = str(currency).upper() if currency else "USD"
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert prediction result to dictionary."""
