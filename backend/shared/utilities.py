@@ -19,6 +19,9 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 import json
 
+# Global in-memory cache for stock categorization
+_CATEGORIZATION_CACHE: Dict[str, str] = {}
+
 # Configuration Management
 class Config:
     """
@@ -39,12 +42,6 @@ class Config:
         self.upstox_client_id = os.getenv('UPSTOX_CLIENT_ID')
         self.upstox_client_secret = os.getenv('UPSTOX_CLIENT_SECRET')
         self.upstox_redirect_uri = os.getenv('UPSTOX_REDIRECT_URI', 'http://localhost:3000')
-        
-        # Note: Dynamic tokens (access_token, refresh_token, expiry) are now stored in JSON cache
-        # and managed by UpstoxTokenManager. These are no longer loaded from .env:
-        # - upstox_access_token
-        # - upstox_refresh_token  
-        # - upstox_token_expiry
     
     def get_data_path(self, *paths):
         """Get path relative to data directory"""
@@ -158,10 +155,20 @@ def get_current_timestamp() -> str:
 
 def categorize_stock(symbol: str) -> str:
     """
-    Categorize stock using YFinance as primary method, with index files as fallback
-    This works very well for new data and historical data
+    Categorize stock using prioritized resolution hierarchy:
+    1. Explicit exchange suffixes (.NS, .BO, .US)
+    2. In-memory categorization cache
+    3. Local master index files (O(1) disk lookup)
+    4. Pattern-based rule matching
+    5. Fallback to YFinance scraping (cached)
     """
+    if not symbol or not isinstance(symbol, str):
+        return 'us_stocks'
+        
     symbol_upper = symbol.upper().strip()
+    if not symbol_upper:
+        return 'us_stocks'
+        
     base_symbol = symbol_upper.split('.')[0]
     
     # 1. Check explicit exchange suffixes (highest priority)
@@ -174,211 +181,95 @@ def categorize_stock(symbol: str) -> str:
     for suffix in us_suffixes:
         if symbol_upper.endswith(suffix):
             return 'us_stocks'
-    
-    # 2. Use YFinance as primary method (works very well for new data)
-    try:
-        import yfinance as yf
-        
-        # Try as Indian stock with .NS suffix first
-        indian_symbol = f"{base_symbol}.NS"
-        ticker = yf.Ticker(indian_symbol)
-        info = ticker.info
-        
-        if info and 'symbol' in info and info.get('symbol'):
-            # Check if it's an Indian exchange
-            exchange = info.get('exchange', '').upper()
-            country = info.get('country', '').upper()
             
-            # Indian exchanges and country
-            indian_exchanges = ['NSE', 'NSI', 'BSE', 'BOM']
-            if any(ex in exchange for ex in indian_exchanges) or country == 'INDIA':
-                return 'ind_stocks'
-        
-        # Try as US stock
-        us_symbol = base_symbol
-        ticker = yf.Ticker(us_symbol)
-        info = ticker.info
-        
-        # Check if we got valid data
-        if info and 'symbol' in info and info.get('symbol'):
-            # Check the exchange to confirm it's US
-            exchange = info.get('exchange', '').upper()
-            country = info.get('country', '').upper()
-            
-            # US exchanges and country
-            us_exchanges = ['NASDAQ', 'NYSE', 'NYSEARCA', 'BATS', 'AMEX']
-            if any(ex in exchange for ex in us_exchanges) or country == 'UNITED STATES':
-                return 'us_stocks'
+    # 2. Check in-memory cache
+    if base_symbol in _CATEGORIZATION_CACHE:
+        return _CATEGORIZATION_CACHE[base_symbol]
     
-    except Exception as e:
-        # If yfinance validation fails, fall back to index files
-        pass
-    
-    # 3. Fallback to index files for known symbols
+    # 3. Check local index files first (instant disk lookup before network I/O)
     try:
-        # Get paths to index files
         current_dir = os.path.dirname(os.path.dirname(__file__))
         indian_index = os.path.join(current_dir, '..', 'permanent', 'ind_stocks', 'index_ind_stocks.csv')
         us_index = os.path.join(current_dir, '..', 'permanent', 'us_stocks', 'index_us_stocks.csv')
         
-        # Check if symbol exists in Indian index
+        # Check Indian index
         if os.path.exists(indian_index):
             try:
                 import pandas as pd
                 df = pd.read_csv(indian_index)
-                if not df.empty and base_symbol in df['symbol'].values:
+                if not df.empty and 'symbol' in df.columns and base_symbol in df['symbol'].dropna().astype(str).str.upper().values:
+                    _CATEGORIZATION_CACHE[base_symbol] = 'ind_stocks'
                     return 'ind_stocks'
-            except ImportError:
-                # Fallback to csv module
-                import csv
-                with open(indian_index, 'r', newline='', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        if row['symbol'] == base_symbol:
-                            return 'ind_stocks'
-        
-        # Check if symbol exists in US index
+            except Exception:
+                pass
+                
+        # Check US index
         if os.path.exists(us_index):
             try:
                 import pandas as pd
                 df = pd.read_csv(us_index)
-                if not df.empty and base_symbol in df['symbol'].values:
+                if not df.empty and 'symbol' in df.columns and base_symbol in df['symbol'].dropna().astype(str).str.upper().values:
+                    _CATEGORIZATION_CACHE[base_symbol] = 'us_stocks'
                     return 'us_stocks'
-            except ImportError:
-                # Fallback to csv module
-                import csv
-                with open(us_index, 'r', newline='', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        if row['symbol'] == base_symbol:
-                            return 'us_stocks'
-                            
-    except Exception as e:
-        # If file checking fails, fall back to pattern analysis
+            except Exception:
+                pass
+    except Exception:
         pass
-    
-    # 4. Check for common Indian company patterns first (before US pattern)
+        
+    # 4. Pattern matching analysis for known Indian company names/symbols
     if len(base_symbol) >= 3:
         indian_patterns = [
             'RELIANCE', 'TCS', 'INFY', 'HDFC', 'ICICI', 'WIPRO', 'MARUTI', 
             'BAJAJ', 'TATA', 'ADANI', 'LT', 'ITC', 'BHARTI', 'ONGC', 'SBI',
             'NTPC', 'POWER', 'COAL', 'GAIL', 'BPCL', 'HPCL', 'IOC', 'BANK'
         ]
-        
         for pattern in indian_patterns:
             if pattern in base_symbol:
+                _CATEGORIZATION_CACHE[base_symbol] = 'ind_stocks'
                 return 'ind_stocks'
-    
-    # 5. Fallback to US pattern analysis for symbols not in index files
-    import re
-    if re.match(r'^[A-Z]{1,5}$', base_symbol) and '.' not in symbol_upper:
-        return 'us_stocks'
-    
-    # 6. Default to US stocks for unrecognized patterns
-    return 'us_stocks'
 
-def validate_and_categorize_stock(symbol: str) -> str:
-    """
-    Validate stock symbol and categorize it using YFinance as primary method
-    This is the most robust approach for new data
-    """
-    symbol_upper = symbol.upper().strip()
-    base_symbol = symbol_upper.split('.')[0]
-    
-    # 1. First check explicit suffixes (most reliable)
-    indian_suffixes = ['.NS', '.BO']
-    for suffix in indian_suffixes:
-        if symbol_upper.endswith(suffix):
-            return 'ind_stocks'
-    
-    us_suffixes = ['.US']
-    for suffix in us_suffixes:
-        if symbol_upper.endswith(suffix):
-            return 'us_stocks'
-    
-    # 2. Use YFinance as primary method for categorization (works very well)
+    # 5. YFinance remote scraping fallback (only reached for unknown symbols)
     try:
         import yfinance as yf
-        
-        # Try as Indian stock with .NS suffix first
         indian_symbol = f"{base_symbol}.NS"
         ticker = yf.Ticker(indian_symbol)
         info = ticker.info
         
         if info and 'symbol' in info and info.get('symbol'):
-            # Check if it's an Indian exchange
             exchange = info.get('exchange', '').upper()
             country = info.get('country', '').upper()
-            
-            # Indian exchanges and country
             indian_exchanges = ['NSE', 'NSI', 'BSE', 'BOM']
             if any(ex in exchange for ex in indian_exchanges) or country == 'INDIA':
+                _CATEGORIZATION_CACHE[base_symbol] = 'ind_stocks'
                 return 'ind_stocks'
         
-        # Try as US stock
-        us_symbol = base_symbol
-        ticker = yf.Ticker(us_symbol)
-        info = ticker.info
-        
-        # Check if we got valid data
-        if info and 'symbol' in info and info.get('symbol'):
-            # Check the exchange to confirm it's US
-            exchange = info.get('exchange', '').upper()
-            country = info.get('country', '').upper()
-            
-            # US exchanges and country
+        ticker_us = yf.Ticker(base_symbol)
+        info_us = ticker_us.info
+        if info_us and 'symbol' in info_us and info_us.get('symbol'):
+            exchange = info_us.get('exchange', '').upper()
+            country = info_us.get('country', '').upper()
             us_exchanges = ['NASDAQ', 'NYSE', 'NYSEARCA', 'BATS', 'AMEX']
             if any(ex in exchange for ex in us_exchanges) or country == 'UNITED STATES':
+                _CATEGORIZATION_CACHE[base_symbol] = 'us_stocks'
                 return 'us_stocks'
-    
-    except Exception as e:
-        # If yfinance validation fails, fall back to index files and pattern matching
+    except Exception:
         pass
-    
-    # 3. Fallback to index files for known symbols
-    try:
-        # Get paths to index files
-        current_dir = os.path.dirname(os.path.dirname(__file__))
-        indian_index = os.path.join(current_dir, '..', 'permanent', 'ind_stocks', 'index_ind_stocks.csv')
-        us_index = os.path.join(current_dir, '..', 'permanent', 'us_stocks', 'index_us_stocks.csv')
         
-        # Check if symbol exists in Indian index
-        if os.path.exists(indian_index):
-            try:
-                import pandas as pd
-                df = pd.read_csv(indian_index)
-                if not df.empty and base_symbol in df['symbol'].values:
-                    return 'ind_stocks'
-            except ImportError:
-                # Fallback to csv module
-                import csv
-                with open(indian_index, 'r', newline='', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        if row['symbol'] == base_symbol:
-                            return 'ind_stocks'
+    # 6. Fallback pattern matching
+    import re
+    if re.match(r'^[A-Z]{1,5}$', base_symbol) and '.' not in symbol_upper:
+        category = 'us_stocks'
+    else:
+        category = 'us_stocks'
         
-        # Check if symbol exists in US index
-        if os.path.exists(us_index):
-            try:
-                import pandas as pd
-                df = pd.read_csv(us_index)
-                if not df.empty and base_symbol in df['symbol'].values:
-                    return 'us_stocks'
-            except ImportError:
-                # Fallback to csv module
-                import csv
-                with open(us_index, 'r', newline='', encoding='utf-8') as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        if row['symbol'] == base_symbol:
-                            return 'us_stocks'
-                            
-    except Exception as e:
-        # If file checking fails, continue to pattern matching
-        pass
-    
-    # 4. Fall back to pattern-based categorization
+    _CATEGORIZATION_CACHE[base_symbol] = category
+    return category
+
+def validate_and_categorize_stock(symbol: str) -> str:
+    """
+    Validate stock symbol and categorize it efficiently.
+    Uses categorize_stock directly to leverage the prioritized resolution hierarchy.
+    """
     return categorize_stock(symbol)
 
 def format_price(price: float, currency: str = 'USD') -> str:
@@ -422,7 +313,6 @@ def standardize_csv_columns(df):
     try:
         import pandas as pd
         if isinstance(df, pd.DataFrame):
-            # Create column mapping for common variations
             column_mapping = {
                 'Date': 'date',
                 'Open': 'open', 
@@ -432,7 +322,6 @@ def standardize_csv_columns(df):
                 'Volume': 'volume',
                 'Adj Close': 'adjusted_close',
                 'Adj_Close': 'adjusted_close',
-                'Adj Close': 'adjusted_close',
                 'Symbol': 'symbol',
                 'Company Name': 'company_name',
                 'Company_Name': 'company_name',
@@ -443,12 +332,8 @@ def standardize_csv_columns(df):
                 'Exchange': 'exchange'
             }
             
-            # Rename columns
             df = df.rename(columns=column_mapping)
-            
-            # Convert all column names to lowercase
             df.columns = df.columns.str.lower()
-            
             return df
     except ImportError:
         pass
@@ -469,7 +354,7 @@ def get_currency_for_category(category: str) -> str:
     elif category == 'ind_stocks':
         return 'INR'
     else:
-        return 'USD'  # Default to USD
+        return 'USD'
 
 def get_live_exchange_rate() -> float:
     """
@@ -482,7 +367,6 @@ def get_live_exchange_rate() -> float:
         from .currency_converter import get_live_exchange_rate
         return get_live_exchange_rate()
     except ImportError:
-        # Fallback to hardcoded rate if currency converter not available
         return 83.5
 
 def convert_usd_to_inr(usd_amount: float) -> float:
@@ -499,7 +383,6 @@ def convert_usd_to_inr(usd_amount: float) -> float:
         from .currency_converter import convert_usd_to_inr
         return convert_usd_to_inr(usd_amount)
     except ImportError:
-        # Fallback to hardcoded rate
         return usd_amount * 83.5
 
 def convert_inr_to_usd(inr_amount: float) -> float:
@@ -516,40 +399,33 @@ def convert_inr_to_usd(inr_amount: float) -> float:
         from .currency_converter import convert_inr_to_usd
         return convert_inr_to_usd(inr_amount)
     except ImportError:
-        # Fallback to hardcoded rate
         return inr_amount / 83.5
 
 # Constants
 class Constants:
     """Application constants"""
     
-    # Stock Categories (simplified to only Indian or US)
     US_STOCKS = 'us_stocks'
     INDIAN_STOCKS = 'ind_stocks'
     
-    # API Sources
     YFINANCE = 'yfinance'
     FINNHUB = 'finnhub'
     PERMANENT_DIR = 'permanent_directory'
     
-    # File Extensions
     CSV_EXTENSION = '.csv'
     JSON_EXTENSION = '.json'
     
-    # Default Values
     DEFAULT_CACHE_DURATION = 60
     DEFAULT_REQUEST_DELAY = 2.0
     DEFAULT_PORT = 5000
     MAX_SYMBOL_LENGTH = 10
     MAX_SEARCH_RESULTS = 20
-    EXCHANGE_RATE_CACHE_DURATION = 3600  # 1 hour
+    EXCHANGE_RATE_CACHE_DURATION = 3600
     
-    # Data Fetching Date Ranges
     HISTORICAL_START = "2020-01-01"
     HISTORICAL_END = "2024-12-31"
     LATEST_START = "2025-01-01"
     
-    # CSV Column Names (standardized lowercase)
     REQUIRED_STOCK_COLUMNS = [
         'date', 'open', 'high', 'low', 'close', 'volume', 'adjusted_close', 'currency'
     ]
@@ -583,6 +459,7 @@ __all__ = [
     'PredictionResult',
     'get_current_timestamp',
     'categorize_stock',
+    'validate_and_categorize_stock',
     'format_price',
     'ensure_alphabetical_order',
     'standardize_csv_columns',
@@ -596,4 +473,3 @@ __all__ = [
     'DataFetchError',
     'PredictionError'
 ]
-
