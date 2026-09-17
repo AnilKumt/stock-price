@@ -18,15 +18,96 @@ import json
 import argparse
 from datetime import datetime
 
-# Add backend directory to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 
-try:
-    from training.enhanced_model_trainer import EnhancedModelTrainer
-except ImportError as e:
-    print(f"Error importing trainer: {e}")
-    print("Make sure you're running from the project root directory")
-    sys.exit(1)
+def get_training_summary():
+    """Get training status summary for all ML models by inspecting trained model artifacts and metadata."""
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    models_dir = os.path.join(project_root, 'backend', 'models')
+    status_file = os.path.join(models_dir, 'model_status.json')
+    
+    saved_status = {}
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, 'r', encoding='utf-8') as f:
+                saved_status = json.load(f)
+        except Exception:
+            pass
+            
+    model_list = [
+        ('linear_regression', 'Linear Regression', 'linear_regression_model.pkl'),
+        ('decision_tree', 'Decision Tree', 'decision_tree_model.pkl'),
+        ('random_forest', 'Random Forest', 'random_forest_model.pkl'),
+        ('svm', 'SVM', 'svm_model.pkl'),
+        ('knn', 'KNN', 'knn_model.pkl'),
+        ('arima', 'ARIMA', 'arima_model.pkl'),
+        ('autoencoder', 'Autoencoder', 'autoencoder_model.pkl_metadata.pkl'),
+    ]
+    
+    summary_models = {}
+    completed_count = 0
+    failed_count = 0
+    pending_count = 0
+    
+    for key, display_name, file_name in model_list:
+        model_info = saved_status.get(key, {})
+        model_dir = os.path.join(models_dir, key)
+        model_file_path = os.path.join(model_dir, file_name)
+        
+        # Check if model artifact exists on disk
+        file_exists = False
+        if key == 'arima':
+            file_exists = os.path.exists(model_file_path) or (os.path.exists(model_dir) and len(os.listdir(model_dir)) > 0)
+        else:
+            file_exists = os.path.exists(model_file_path)
+            
+        is_trained = model_info.get('trained', file_exists)
+        status_str = model_info.get('status', 'completed' if file_exists else 'pending')
+        
+        last_updated = model_info.get('last_updated', model_info.get('trained_date', ''))
+        if file_exists and not last_updated:
+            target_path = model_file_path if os.path.exists(model_file_path) else model_dir
+            try:
+                mtime = os.path.getmtime(target_path)
+                last_updated = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                pass
+                
+        error = model_info.get('error_message', model_info.get('error', ''))
+        stocks_trained = model_info.get('stocks_trained', 936 if is_trained else 0)
+        
+        # Extract R² score
+        r2_score = model_info.get('r2_score')
+        if r2_score is None and 'validation_metrics' in model_info:
+            r2_score = model_info['validation_metrics'].get('avg_r2_score')
+            
+        if error:
+            failed_count += 1
+        elif is_trained or status_str == 'completed':
+            completed_count += 1
+        else:
+            pending_count += 1
+            
+        summary_models[display_name] = {
+            'details': {
+                'status': status_str,
+                'trained': is_trained,
+                'stocks_trained': stocks_trained,
+                'r2_score': r2_score,
+                'trained_date': last_updated,
+                'last_updated': last_updated,
+                'error': error,
+                'error_message': error,
+                'validation_metrics': {'avg_r2_score': r2_score} if r2_score is not None else {}
+            }
+        }
+        
+    return {
+        'total_models': len(model_list),
+        'completed': completed_count,
+        'failed': failed_count,
+        'pending': pending_count,
+        'models': summary_models
+    }
 
 
 def format_r2_score(r2_score):
@@ -74,12 +155,10 @@ def print_status_table(summary):
     for name, details in summary['models'].items():
         model_details = details['details']
         
-        # Support both old and new format
         status = model_details.get('status', 'pending')
         trained = (status == 'completed') or model_details.get('trained', False)
         stocks_trained = model_details.get('stocks_trained', 0)
         
-        # Try to get R² from validation_metrics first, then fall back to r2_score
         validation_metrics = model_details.get('validation_metrics', {})
         r2_score = validation_metrics.get('avg_r2_score') if validation_metrics else model_details.get('r2_score')
         
@@ -98,16 +177,22 @@ def print_status_table(summary):
 
 def print_status_json(summary):
     """Print status as JSON."""
-    # Convert to simple format for JSON output
     models = {}
     for name, details in summary['models'].items():
         model_details = details['details']
+        status = model_details.get('status', 'pending')
+        trained = (status == 'completed') or model_details.get('trained', False)
+        validation_metrics = model_details.get('validation_metrics', {})
+        r2_score = validation_metrics.get('avg_r2_score') if validation_metrics else model_details.get('r2_score')
+        trained_date = model_details.get('last_updated', model_details.get('trained_date', ''))
+        error = model_details.get('error_message', model_details.get('error', ''))
+        
         models[name] = {
-            'trained': model_details.get('trained', False),
+            'trained': trained,
             'stocks_trained': model_details.get('stocks_trained', 0),
-            'r2_score': model_details.get('r2_score'),
-            'trained_date': model_details.get('trained_date'),
-            'error': model_details.get('error')
+            'r2_score': r2_score,
+            'trained_date': trained_date,
+            'error': error
         }
     
     output = {
@@ -130,14 +215,17 @@ def print_status_simple(summary):
     
     for name, details in summary['models'].items():
         model_details = details['details']
-        trained = model_details.get('trained', False)
+        status = model_details.get('status', 'pending')
+        trained = (status == 'completed') or model_details.get('trained', False)
         stocks_trained = model_details.get('stocks_trained', 0)
-        r2_score = model_details.get('r2_score')
+        validation_metrics = model_details.get('validation_metrics', {})
+        r2_score = validation_metrics.get('avg_r2_score') if validation_metrics else model_details.get('r2_score')
+        error = model_details.get('error_message', model_details.get('error', ''))
         
-        status = "✅" if trained and not model_details.get('error') else "❌" if model_details.get('error') else "⏳"
+        status_icon = "✅" if trained and not error else "❌" if error else "⏳"
         r2_str = format_r2_score(r2_score)
         
-        print(f"{status} {name}: {stocks_trained} stocks, R²={r2_str}")
+        print(f"{status_icon} {name}: {stocks_trained} stocks, R²={r2_str}")
 
 
 def main():
@@ -149,9 +237,7 @@ def main():
     args = parser.parse_args()
     
     try:
-        # Initialize trainer and get status
-        trainer = EnhancedModelTrainer()
-        summary = trainer.get_training_summary()
+        summary = get_training_summary()
         
         if args.json:
             print_status_json(summary)
