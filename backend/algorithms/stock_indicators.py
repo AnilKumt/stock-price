@@ -263,8 +263,11 @@ class StockIndicators:
                 # Rolling standard deviation
                 df[f'close_std_{window}'] = df['close'].rolling(window=window).std()
                 
-                # Position within rolling range
-                df[f'close_position_{window}'] = (df['close'] - df[f'close_min_{window}']) / (df[f'close_max_{window}'] - df[f'close_min_{window}'])
+                # Position within rolling range - handle division by zero
+                rolling_range = df[f'close_max_{window}'] - df[f'close_min_{window}']
+                close_pos = (df['close'] - df[f'close_min_{window}']) / rolling_range
+                close_pos = close_pos.replace([np.inf, -np.inf], np.nan)
+                df[f'close_position_{window}'] = close_pos.fillna(0.5)  # Middle position when range is 0
         
         return df
     
