@@ -99,8 +99,12 @@ class ConfidenceCalculator:
                 self.WEIGHT_TIME_DECAY * time_decay_score
             )
             
+            # Fallback if non-finite
+            if not np.isfinite(confidence):
+                return 50.0
+
             # Ensure bounds
-            confidence = max(0.0, min(100.0, confidence))
+            confidence = max(0.0, min(100.0, float(confidence)))
             
             logger.debug(
                 f"Ensemble confidence: {confidence:.1f}% "
@@ -153,8 +157,12 @@ class ConfidenceCalculator:
                 self.WEIGHT_SINGLE_TIME_DECAY * time_decay_score
             )
             
+            # Fallback if non-finite
+            if not np.isfinite(confidence):
+                return 50.0
+
             # Ensure bounds
-            confidence = max(0.0, min(100.0, confidence))
+            confidence = max(0.0, min(100.0, float(confidence)))
             
             logger.debug(
                 f"Single model confidence ({model_name}): {confidence:.1f}% "
@@ -185,7 +193,10 @@ class ConfidenceCalculator:
             if isinstance(model_accuracies, dict):
                 accuracy = model_accuracies.get(model_name, 0.5)
             else:
-                accuracy = model_accuracies if model_accuracies else 0.5
+                accuracy = model_accuracies if model_accuracies is not None else 0.5
+            
+            if accuracy is None or not np.isfinite(accuracy):
+                accuracy = 0.5
             
             # CRITICAL FIX: Handle negative R² scores (model worse than baseline)
             # Negative R² means the model performs worse than just predicting the mean
@@ -207,6 +218,8 @@ class ConfidenceCalculator:
         # Process each model's R² score, handling negative values
         processed_accuracies = []
         for name, accuracy in model_accuracies.items():
+            if accuracy is None or not np.isfinite(accuracy):
+                accuracy = 0.5
             if accuracy < 0:
                 # Negative R² scores get mapped to 0-0.1 range (0-10% contribution)
                 processed_accuracy = max(0.0, 0.1 * (1.0 + accuracy))
@@ -216,7 +229,12 @@ class ConfidenceCalculator:
                 processed_accuracy = accuracy * multiplier
             processed_accuracies.append(processed_accuracy)
         
+        if not processed_accuracies:
+            return 50.0
+            
         avg_accuracy = np.mean(processed_accuracies)
+        if not np.isfinite(avg_accuracy):
+            return 50.0
         
         # Convert to 0-100 scale
         score = avg_accuracy * 100
@@ -238,15 +256,23 @@ class ConfidenceCalculator:
         if len(model_predictions) < 2:
             return 70.0  # Default for single prediction
         
-        predictions = list(model_predictions.values())
+        predictions = [p for p in model_predictions.values() if p is not None and np.isfinite(p)]
+        if len(predictions) < 2:
+            return 70.0
+
         mean_pred = np.mean(predictions)
         
-        if mean_pred == 0:
+        if mean_pred == 0 or not np.isfinite(mean_pred):
             return 50.0
         
         # Calculate coefficient of variation (CV)
         std_dev = np.std(predictions)
+        if not np.isfinite(std_dev):
+            return 50.0
+
         cv = std_dev / abs(mean_pred)
+        if not np.isfinite(cv):
+            return 50.0
         
         # Convert CV to confidence score
         # CV of 0 (perfect agreement) = 100
@@ -281,16 +307,34 @@ class ConfidenceCalculator:
         Returns:
             Score (0-100)
         """
-        if len(historical_prices) < 30:
+        if historical_prices is None or len(historical_prices) < 30:
             return 50.0  # Not enough data
         
         # Calculate daily returns
         prices = historical_prices[-252:]  # Last year (approx 252 trading days)
-        returns = np.diff(prices) / prices[:-1]
         
+        denominators = prices[:-1]
+        numerators = np.diff(prices)
+        
+        # Filter out zero/negative denominators or non-finite price values
+        valid_mask = (denominators > 0) & np.isfinite(denominators) & np.isfinite(prices[1:])
+        if not np.any(valid_mask):
+            return 50.0
+            
+        returns = numerators[valid_mask] / denominators[valid_mask]
+        returns = returns[np.isfinite(returns)]
+        
+        if len(returns) == 0:
+            return 50.0
+
         # Calculate annualized volatility
         daily_volatility = np.std(returns)
+        if not np.isfinite(daily_volatility):
+            return 50.0
+
         annualized_volatility = daily_volatility * np.sqrt(252)
+        if not np.isfinite(annualized_volatility):
+            return 50.0
         
         # Convert volatility to confidence score
         # Volatility of 0.15 (15% annual) = ~85 score (low-medium volatility stock)
@@ -351,4 +395,3 @@ class ConfidenceCalculator:
 
 # Global instance
 confidence_calculator = ConfidenceCalculator()
-
