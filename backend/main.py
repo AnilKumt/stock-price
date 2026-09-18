@@ -61,10 +61,6 @@ indian_fetcher = IndianCurrentFetcher()
 us_latest_fetcher = USLatestFetcher()
 ind_latest_fetcher = IndianLatestFetcher()
 
-# [FUTURE] Initialize other components when implemented
-# company_info_fetcher = CompanyInfoFetcher()
-# prediction_engine = PredictionEngine()
-
 def initialize_dynamic_indexes():
     """Initialize dynamic indexes on startup if needed"""
     try:
@@ -132,8 +128,7 @@ def get_live_price():
     try:
         logger.info(f"Fetching live price for symbol: {symbol}")
         
-        # Use appropriate fetcher based on stock category (simplified to only Indian or US)
-        # Use validation-based categorization for more accuracy
+        # Use appropriate fetcher based on stock category
         category = validate_and_categorize_stock(symbol)
         if category == 'ind_stocks':
             result = indian_fetcher.fetch_current_price(symbol)
@@ -154,7 +149,6 @@ def get_live_price():
                 
         except Exception as e:
             logger.warning(f"Currency conversion failed: {e}")
-            # Continue without currency conversion if it fails
         
         return jsonify({
             'success': True,
@@ -194,7 +188,6 @@ def get_latest_prices():
                 'message': 'No data available'
             })
         
-        # Handle both pandas DataFrame and list
         if hasattr(data, 'to_dict'):
             return jsonify({
                 'success': True,
@@ -229,7 +222,6 @@ def search_stocks():
         results = []
         query_lower = query.lower()
         
-        # Search both US and Indian stocks from dynamic indexes
         for category in ['us_stocks', 'ind_stocks']:
             index_path = index_manager.get_index_path(category)
             if os.path.exists(index_path):
@@ -244,7 +236,6 @@ def search_stocks():
                         'name': row.get('company_name', row['symbol'])
                     })
         
-        # Remove duplicates
         seen = set()
         unique_results = []
         for result in results:
@@ -254,10 +245,8 @@ def search_stocks():
                 if len(unique_results) >= Constants.MAX_SEARCH_RESULTS:
                     break
         
-        # If no results found, try to fetch the query as a new stock symbol
         if not unique_results and query:
             try:
-                # Determine if it's likely an Indian stock (no dots, uppercase)
                 if query.isupper() and '.' not in query:
                     logger.info(f"Attempting to fetch new Indian stock: {query}")
                     result = indian_fetcher.fetch_current_price(query)
@@ -305,7 +294,8 @@ def predict_stock_price():
     """Generate stock price prediction using pre-trained ML models"""
     try:
         symbol = request.args.get('symbol')
-        horizon = request.args.get('horizon', '1d')
+        horizon_raw = request.args.get('horizon', '1D')
+        horizon = horizon_raw.strip().upper() if horizon_raw else '1D'
         model_name = request.args.get('model', 'ensemble')  # Default to ensemble
         
         if not symbol:
@@ -335,18 +325,15 @@ def predict_stock_price():
         if not category:
             return jsonify({'error': f'Invalid stock symbol: {symbol}'}), 400
         
-        # Accept current_price from frontend (if provided) to avoid duplicate fetching
         current_price_param = request.args.get('current_price')
-        data_source = 'live_api'  # Track data source for sync validation
-        data_date = None  # Track data date when using stored data
+        data_source = 'live_api'
+        data_date = None
         
         if current_price_param:
-            # Use live price passed from frontend
             current_price = float(current_price_param)
             data_source = 'live_api'
             logger.info(f"Using live price from frontend for {symbol}: ${current_price:.2f}")
         else:
-            # Fallback: Fetch from stored data (data/past → permanent fallback)
             from prediction.data_loader import DataLoader
             data_loader = DataLoader()
             df = data_loader.load_stock_data(symbol, category)
@@ -355,16 +342,12 @@ def predict_stock_price():
             
             current_price = float(df['close'].iloc[-1])
             data_date = str(df['date'].iloc[-1]) if 'date' in df.columns else None
-            # Note: data_loader logs whether it used 'past' or 'permanent' directory
-            data_source = 'stored_data'  # Could be from data/past or permanent (fallback)
+            data_source = 'stored_data'
             logger.info(f"Using stored price for {symbol}: ${current_price:.2f} from {data_date}")
         
-        # Generate prediction using selected model only (not ensemble)
         if model_name == 'ensemble':
-            # Use all available models
             selected_models = None
         else:
-            # Use only the selected model
             selected_models = [model_name]
         
         result = predictor.predict_single_stock_with_models(
@@ -383,26 +366,24 @@ def predict_stock_price():
                 'details': f'Symbol: {symbol}, Category: {category}, Horizon: {horizon}'
             }), 500
         
-        # Get exchange rate for currency conversion
         exchange_rate = get_live_exchange_rate()
         
-        # Return prediction in USD (model's native currency)
         response = {
             'symbol': symbol,
             'horizon': horizon,
-            'predicted_price': result['predicted_price'],  # In USD
-            'current_price': current_price,  # In USD (normalized)
+            'predicted_price': result['predicted_price'],
+            'current_price': current_price,
             'confidence': result['confidence'],
             'price_range': result.get('price_range'),
             'time_frame_days': result.get('time_frame_days'),
             'model_info': result.get('model_info'),
             'data_points_used': result.get('data_points_used'),
             'last_updated': result.get('last_updated'),
-            'currency': 'USD',  # Model currency
-            'exchange_rate': exchange_rate,  # For INR conversion
-            'original_category': category,  # 'us_stocks' or 'ind_stocks'
-            'data_source': data_source,  # 'live_api' or 'stored_data'
-            'data_date': data_date  # Date of stored data (None for live_api)
+            'currency': 'USD',
+            'exchange_rate': exchange_rate,
+            'original_category': category,
+            'data_source': data_source,
+            'data_date': data_date
         }
         
         return jsonify(response)
@@ -414,17 +395,7 @@ def predict_stock_price():
 
 @app.route('/api/train', methods=['POST'])
 def train_models():
-    """
-    Train ML models for a specific symbol
-    
-    Expected JSON payload:
-    {
-        "symbol": "AAPL",
-        "models": ["lstm", "rf", "arima"],  # Optional, defaults to all
-        "force": true,  # Optional, retrain even if models exist
-        "max_data_points": 1000  # Optional, limit training data
-    }
-    """
+    """Train ML models for a specific symbol"""
     try:
         data = request.get_json()
         symbol = data.get('symbol')
@@ -437,13 +408,10 @@ def train_models():
                 'error': 'Symbol is required'
             }), 400
         
-        # Import training function
         from algorithms.utils import predict_for_symbol
         
-        # Train models (this will train and return prediction)
         result = predict_for_symbol(symbol, '1d', models, max_data_points)
         
-        # Extract training metrics
         training_results = {
             'symbol': symbol,
             'models_trained': result['model_info']['members'],
@@ -462,16 +430,10 @@ def train_models():
         }), 500
 
 
-@app.route('/api/models/<symbol>', methods=['GET'])
+@app.route('/api/models/', methods=['GET'])
 def get_models(symbol):
-    """
-    Get information about trained models for a symbol
-    
-    Path parameters:
-    - symbol: Stock symbol
-    """
+    """Get information about trained models for a symbol"""
     try:
-        # Check if models directory exists
         models_dir = os.path.join('backend', 'models', symbol)
         
         if not os.path.exists(models_dir):
@@ -481,12 +443,10 @@ def get_models(symbol):
                 'message': 'No trained models found for this symbol'
             })
         
-        # List available models
         model_files = []
         for item in os.listdir(models_dir):
             item_path = os.path.join(models_dir, item)
             if os.path.isdir(item_path):
-                # Check if it's a valid model directory
                 metadata_file = os.path.join(item_path, 'metadata.json')
                 if os.path.exists(metadata_file):
                     try:
@@ -550,13 +510,7 @@ def get_stock_info():
 
 @app.route('/company_info', methods=['GET'])
 def get_company_info():
-    """
-    [FUTURE] Get comprehensive company information
-    
-    Query parameters:
-    - symbol: Stock symbol
-    - info_type: fundamentals, metadata, news, etc.
-    """
+    """[FUTURE] Get comprehensive company information"""
     symbol = request.args.get('symbol')
     info_type = request.args.get('info_type', 'all')
     
@@ -566,7 +520,6 @@ def get_company_info():
             'error': 'Symbol parameter is required'
         }), 400
     
-    # [FUTURE] Implement company info fetching
     return jsonify({
         'success': False,
         'error': 'Company info feature not yet implemented',
@@ -575,13 +528,7 @@ def get_company_info():
 
 @app.route('/historical', methods=['GET'])
 def get_historical_data():
-    """
-    Get historical stock data for chart visualization.
-    
-    Query parameters:
-    - symbol: Stock symbol
-    - period: Time period (week, month, year, 5year)
-    """
+    """Get historical stock data for chart visualization"""
     symbol = request.args.get('symbol')
     period = request.args.get('period')
     
@@ -599,11 +546,8 @@ def get_historical_data():
     
     try:
         logger.info(f"Fetching historical data for {symbol} ({period})")
-        
-        # Determine stock category
         category = validate_and_categorize_stock(symbol)
         
-        # Calculate date range based on period
         from datetime import datetime, timedelta
         today = datetime.now().date()
         
@@ -612,56 +556,43 @@ def get_historical_data():
         elif period == 'month':
             start_date = today - timedelta(days=30)
         elif period == 'year':
-            # For year period, use data from 01-01-2024 to current date
             start_date = datetime(2024, 1, 1).date()
         elif period == '5year':
-            # For 5year period, use all available historical data (2020-2025)
-            # Don't filter by date range - we'll use all available data
             start_date = None
         
-        
-        # Get currency from dynamic index
         from shared.index_manager import DynamicIndexManager
         index_manager = DynamicIndexManager(config.data_dir)
         stock_info = index_manager.get_stock_info(symbol, category)
         default_currency = stock_info.get('currency', 'USD') if stock_info else 'USD'
         
-        # Define file paths
         past_file = os.path.join(config.data_dir, 'past', category, 'individual_files', f'{symbol}.csv')
         latest_file = os.path.join(config.data_dir, 'latest', category, 'individual_files', f'{symbol}.csv')
         
         historical_data = []
         
-        # Read past data (2020-2024)
         if os.path.exists(past_file):
             try:
                 import pandas as pd
                 df_past = pd.read_csv(past_file)
-                # Handle both timezone-aware and timezone-naive dates in past data
                 try:
-                    # Try parsing as timezone-aware first
                     df_past['date'] = pd.to_datetime(df_past['date'], utc=True).dt.tz_localize(None).dt.date
                 except:
-                    # Fallback to timezone-naive parsing
                     df_past['date'] = pd.to_datetime(df_past['date']).dt.date
                 historical_data.append(df_past)
                 logger.info(f"Loaded {len(df_past)} records from past data")
             except Exception as e:
                 logger.warning(f"Could not read past data for {symbol}: {e}")
         
-        # Read latest data (2025+)
         if os.path.exists(latest_file):
             try:
                 import pandas as pd
                 df_latest = pd.read_csv(latest_file)
-                # Ensure consistent date parsing for latest data
                 df_latest['date'] = pd.to_datetime(df_latest['date']).dt.date
                 historical_data.append(df_latest)
                 logger.info(f"Loaded {len(df_latest)} records from latest data")
             except Exception as e:
                 logger.warning(f"Could not read latest data for {symbol}: {e}")
         
-        # If no data found in data/past or data/latest, try permanent directory as fallback
         if not historical_data:
             logger.info(f"Trying permanent directory for {symbol}")
             permanent_file = os.path.join(config.permanent_dir, category, 'individual_files', f'{symbol}.csv')
@@ -670,7 +601,6 @@ def get_historical_data():
                 try:
                     import pandas as pd
                     df_perm = pd.read_csv(permanent_file)
-                    # Handle date parsing for permanent data
                     try:
                         df_perm['date'] = pd.to_datetime(df_perm['date'], utc=True).dt.tz_localize(None).dt.date
                     except:
@@ -687,37 +617,28 @@ def get_historical_data():
                 'message': f'No historical data found for symbol {symbol}'
             }), 404
         
-        # Combine all data
         try:
             import pandas as pd
             combined_df = pd.concat(historical_data, ignore_index=True)
-            
-            # Remove duplicates and sort by date
             combined_df = combined_df.drop_duplicates(subset=['date']).sort_values('date')
             
-            # Debug: Log date range of combined data
             if len(combined_df) > 0:
                 logger.info(f"Combined data date range: {combined_df['date'].min()} to {combined_df['date'].max()}")
                 logger.info(f"Total combined data points: {len(combined_df)}")
             
-            # Filter by date range or get last year of data
             if period == 'year':
-                # For year period, filter data from 01-01-2024 to current date
                 logger.info(f"Getting 1 year historical data for {symbol} from 2024-01-01")
                 filtered_df = combined_df[combined_df['date'] >= start_date]
                 logger.info(f"Selected {len(filtered_df)} data points for 1-year chart")
                 if len(filtered_df) > 0:
                     logger.info(f"Filtered data date range: {filtered_df['date'].min()} to {filtered_df['date'].max()}")
             elif period == '5year':
-                # For 5year period, use all available historical data (2020-2025)
                 logger.info(f"Getting all available historical data for {symbol} (5-year chart)")
                 filtered_df = combined_df
                 logger.info(f"Selected {len(filtered_df)} data points for 5-year chart")
             else:
-                # For other periods, filter by date range
                 filtered_df = combined_df[combined_df['date'] >= start_date]
             
-            # Convert to list of dictionaries for on-demand fetching check
             price_points = []
             for _, row in filtered_df.iterrows():
                 price_points.append({
@@ -730,12 +651,9 @@ def get_historical_data():
                     'currency': row['currency'] if pd.notna(row.get('currency')) else default_currency
                 })
             
-            # For year and 5year periods, we already have the data we need
             if period not in ['year', '5year']:
-                # Check if we need to fetch additional recent data for other periods
                 logger.info(f"Checking if additional data needed for {symbol} {period}: {len(price_points)} existing points")
                 
-                # Use appropriate fetcher based on category
                 if category == 'us_stocks':
                     additional_data = us_latest_fetcher.fetch_recent_data_on_demand(symbol, period, price_points)
                 elif category == 'ind_stocks':
@@ -745,9 +663,7 @@ def get_historical_data():
                 
                 logger.info(f"Additional data fetched: {len(additional_data)} points")
                 
-                # Combine existing and additional data
                 if additional_data:
-                    # Remove duplicates and sort by date
                     all_data = price_points + additional_data
                     seen_dates = set()
                     unique_data = []
@@ -773,7 +689,6 @@ def get_historical_data():
             })
             
         except ImportError:
-            # Fallback without pandas
             import csv
             from datetime import datetime
             
@@ -808,7 +723,6 @@ def get_historical_data():
                     'message': f'No data available for {symbol} in the specified {period} period'
                 }), 404
             
-            # Sort by date
             all_records.sort(key=lambda x: x['date'])
             
             return jsonify({
@@ -827,10 +741,7 @@ def get_historical_data():
 
 @app.route('/algorithms', methods=['GET'])
 def get_available_algorithms():
-    """
-    [FUTURE] Get list of available prediction algorithms
-    """
-    # [FUTURE] Return actual algorithm list
+    """[FUTURE] Get list of available prediction algorithms"""
     return jsonify({
         'success': True,
         'data': {
