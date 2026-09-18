@@ -77,7 +77,7 @@ npm --version
 ```powershell
 # Clone repository
 git clone https://github.com/ankit02327/stock-price.git
-cd ml
+
 
 # Backend setup
 cd backend
@@ -115,7 +115,7 @@ npm --version
 ```bash
 # Clone repository
 git clone https://github.com/ankit02327/stock-price.git
-cd ml
+
 
 # Backend setup
 cd backend
@@ -157,7 +157,7 @@ npm --version
 ```bash
 # Clone repository
 git clone https://github.com/ankit02327/stock-price.git
-cd ml
+
 
 # Backend setup
 cd backend
