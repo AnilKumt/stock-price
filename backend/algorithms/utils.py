@@ -107,7 +107,7 @@ class DataPipeline:
             Combined DataFrame with historical data
         """
         try:
-            # Try to determine if it's US or Indian stock
+            # Determine stock category reliably
             category = self._categorize_stock(symbol)
             
             # Load past data (2020-2024)
@@ -152,11 +152,18 @@ class DataPipeline:
             return None
     
     def _categorize_stock(self, symbol: str) -> str:
-        """Categorize stock as US or Indian based on symbol format"""
-        # Simple heuristic: Indian stocks are typically uppercase without dots
-        if symbol.isupper() and '.' not in symbol:
-            return 'ind_stocks'
-        return 'us_stocks'
+        """Categorize stock as US or Indian using shared utilities"""
+        try:
+            from shared.utilities import categorize_stock
+            return categorize_stock(symbol)
+        except Exception:
+            # Robust fallback if shared utility cannot be imported
+            symbol_upper = symbol.upper().strip() if symbol else ''
+            if symbol_upper.endswith(('.NS', '.BO')):
+                return 'ind_stocks'
+            elif symbol_upper.endswith('.US'):
+                return 'us_stocks'
+            return 'us_stocks'
     
     def build_features(self, df: pd.DataFrame, lookback: int = 60) -> pd.DataFrame:
         """
