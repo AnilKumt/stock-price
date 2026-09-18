@@ -78,6 +78,7 @@ npm --version
 # Clone repository
 git clone https://github.com/ankit02327/stock-price.git
 
+cd stock-price
 
 # Backend setup
 cd backend
@@ -116,6 +117,7 @@ npm --version
 # Clone repository
 git clone https://github.com/ankit02327/stock-price.git
 
+cd stock-price
 
 # Backend setup
 cd backend
@@ -158,6 +160,7 @@ npm --version
 # Clone repository
 git clone https://github.com/ankit02327/stock-price.git
 
+cd stock-price
 
 # Backend setup
 cd backend
