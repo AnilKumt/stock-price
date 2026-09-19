@@ -124,6 +124,8 @@ class DataLoader:
             # Append current price if provided
             if current_price:
                 logger.info(f"Appending current live price for {symbol}")
+                # Create a local copy to prevent in-place mutation of caller's dictionary
+                current_price = current_price.copy()
 
                 # NORMALIZE LIVE PRICE FOR INDIAN STOCKS
                 if category == 'ind_stocks':
